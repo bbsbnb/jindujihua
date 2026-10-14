@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 
 import pdfplumber
@@ -47,6 +48,19 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("2026-12-30", text)
         self.assertIn(result["run_id"], text)
         self.assertIn("关键线路", text)
+        preview = self.service.workbook_preview(result["run_id"], "input", "任务与工程量")
+        self.assertEqual(preview["sheet"], "任务与工程量")
+        self.assertTrue(any(cell["value"] == "WBS编码" for cell in preview["rows"][0]))
+
+        workbook = load_workbook(self.service.sample_path)
+        workbook["任务与工程量"].merge_cells("N2:O2")
+        merged = BytesIO()
+        workbook.save(merged)
+        workbook.close()
+        merged_result = self.service.analyze(merged.getvalue(), "含合并单元格的计划.xlsx")
+        merged_preview = self.service.workbook_preview(merged_result["run_id"], "input", "任务与工程量")
+        self.assertEqual(merged_preview["rows"][1][14]["cell"], "O2")
+        self.assertEqual(merged_preview["rows"][1][14]["value"], "")
 
     def test_approval_workflow_and_audit(self):
         result = self.service.analyze_sample()
@@ -67,6 +81,25 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(self.service.store.list_runs(), [])
         self.assertIsNotNone(self.service.store.get_run(first["run_id"]))
         self.assertEqual(self.service.store.audit(first["run_id"])[-1]["action"], "删除计划")
+
+    def test_manual_progress_adjustment_recalculates_forecast_and_preserves_baseline(self):
+        result = self.service.analyze_sample()
+        self.service.transition(result["run_id"], "review", "张计划", "复核通过")
+        approved = self.service.transition(result["run_id"], "approve", "李经理", "批准")
+        before = next(row for row in result["forecast"] if row["wbs"] == "1.2")
+        adjusted = self.service.adjust_progress(
+            result["run_id"], "1.2", 60, 3,
+            "资源不足", "增加资源", "增加施工班组并调整夜间作业", "张计划",
+        )
+        after = next(row for row in adjusted["forecast"] if row["wbs"] == "1.2")
+        self.assertNotEqual(adjusted["run_id"], result["run_id"])
+        self.assertEqual(adjusted["state"], "草案")
+        self.assertEqual(self.service.get_result(result["run_id"])["state"], approved["state"])
+        self.assertEqual(after["actual_percent"], 60.0)
+        self.assertEqual(after["remaining_duration"], 3)
+        self.assertEqual(after["baseline_finish"], before["baseline_finish"])
+        self.assertTrue(any(row["action"] == "人工调整进度" for row in adjusted["audit"]))
+        self.assertTrue(any(row["manual_override"] == "是" for row in adjusted["traceability"] if row["entity_id"] == "1.2"))
 
     def test_unconfirmed_rate_blocks_formal_output(self):
         workbook = load_workbook(self.service.sample_path)

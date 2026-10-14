@@ -7,6 +7,9 @@ import uuid
 from datetime import date, datetime
 from pathlib import Path
 
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+
 from .analyzer import analyze_bundle
 from .excel_io import WorkbookInputError, create_template, export_result, read_bundle
 from .pdf_report import export_pdf
@@ -79,12 +82,15 @@ class ScheduleService:
         import_confirmed = bool(metadata.get("import_confirmed"))
         if import_confirmed:
             self._confirm_auto_content(bundle)
+        adjustments = self.store.get_manual_adjustments(run_id)
+        self._apply_manual_adjustments(bundle, adjustments)
         result = analyze_bundle(bundle, run_id, metadata["version"])
         self._apply_candidate_issues(result, candidate_notes, import_confirmed)
         self._apply_import_issues(result, bundle, import_confirmed)
         result.formal_eligible = bool(metadata["formal_eligible"])
         result.state = metadata["state"]
-        payload = self._payload(result, import_confirmed)
+        self._append_manual_traceability(result, adjustments)
+        payload = self._payload(result, import_confirmed, adjustments)
         payload["audit"] = self.store.audit(run_id)
         return payload
 
@@ -106,6 +112,50 @@ class ScheduleService:
 
     def archive_plan(self, run_id: str, actor: str) -> dict:
         return self.store.archive_plan(run_id, actor)
+
+    def adjust_progress(
+        self,
+        run_id: str,
+        wbs: str,
+        actual_percent: float,
+        remaining_duration: int,
+        reason: str,
+        action_type: str,
+        note: str,
+        actor: str,
+    ) -> dict:
+        metadata = self.store.get_run(run_id)
+        if not metadata:
+            raise ValueError("找不到该运行")
+        content = Path(metadata["input_path"]).read_bytes()
+        bundle = read_bundle(content, metadata["input_filename"])
+        self._normalize_bundle(bundle)
+        generate_candidates(bundle)
+        if wbs not in {task.wbs for task in bundle.tasks}:
+            raise ValueError("找不到需要调整的任务")
+        if not 0 <= actual_percent <= 100:
+            raise ValueError("实际完成率必须在 0 到 100 之间")
+        if actual_percent < 100 and remaining_duration <= 0:
+            raise ValueError("未完成任务的剩余工期必须大于 0")
+        if not reason.strip() or not action_type.strip() or not note.strip() or not actor.strip():
+            raise ValueError("偏差原因、干预措施、调整说明和操作人不能为空")
+        remaining_duration = 0 if actual_percent == 100 else remaining_duration
+        target_run_id = run_id
+        if metadata["state"] != "草案":
+            target_run_id = "RUN-" + uuid.uuid4().hex[:10].upper()
+            version = self.store.next_version(metadata["project_id"])
+            run_dir = self.generated_dir / target_run_id
+            run_dir.mkdir(parents=True, exist_ok=False)
+            input_path = run_dir / "input.xlsx"
+            input_path.write_bytes(content)
+            self.store.create_adjustment_run(run_id, target_run_id, version, input_path, actor.strip())
+        self.store.save_manual_adjustment(
+            target_run_id, wbs, actual_percent, remaining_duration,
+            reason.strip(), action_type.strip(), note.strip(), actor.strip(),
+        )
+        result = self._recalculate(target_run_id)
+        self._write_outputs(result, self.generated_dir / target_run_id)
+        return self.get_result(target_run_id)
 
     def transition(self, run_id: str, action: str, actor: str, comment: str) -> dict:
         self.store.transition(run_id, action, actor, comment)
@@ -151,6 +201,42 @@ class ScheduleService:
             raise ValueError("文件不存在")
         return path
 
+    def workbook_preview(self, run_id: str, kind: str, sheet_name: str = "") -> dict:
+        path = self.artifact_path(run_id, kind)
+        if path.suffix.lower() != ".xlsx":
+            raise ValueError("仅支持预览 Excel 文件")
+        workbook = load_workbook(path, data_only=False, read_only=True)
+        selected = sheet_name if sheet_name in workbook.sheetnames else workbook.sheetnames[0]
+        sheet = workbook[selected]
+        sheet_names = list(workbook.sheetnames)
+        truncated = sheet.max_row > 200 or sheet.max_column > 40
+        rows = []
+        for row_number, row in enumerate(
+            sheet.iter_rows(min_row=1, max_row=min(sheet.max_row, 200), max_col=min(sheet.max_column, 40)),
+            start=1,
+        ):
+            rows.append([
+                {"cell": f"{get_column_letter(column_number)}{row_number}", "value": self._preview_value(cell.value)}
+                for column_number, cell in enumerate(row, start=1)
+            ])
+        workbook.close()
+        return {
+            "kind": kind,
+            "filename": path.name if kind != "input" else self.store.get_run(run_id)["input_filename"],
+            "sheets": sheet_names,
+            "sheet": selected,
+            "rows": rows,
+            "truncated": truncated,
+        }
+
+    @staticmethod
+    def _preview_value(value):
+        if value is None:
+            return ""
+        if isinstance(value, (date, datetime)):
+            return value.isoformat()
+        return str(value)
+
     def _recalculate(self, run_id: str, use_stored_eligibility: bool = True):
         metadata = self.store.get_run(run_id)
         content = Path(metadata["input_path"]).read_bytes()
@@ -160,12 +246,15 @@ class ScheduleService:
         import_confirmed = bool(metadata.get("import_confirmed"))
         if import_confirmed:
             self._confirm_auto_content(bundle)
+        adjustments = self.store.get_manual_adjustments(run_id)
+        self._apply_manual_adjustments(bundle, adjustments)
         result = analyze_bundle(bundle, run_id, metadata["version"])
         self._apply_candidate_issues(result, candidate_notes, import_confirmed)
         self._apply_import_issues(result, bundle, import_confirmed)
         if use_stored_eligibility:
             result.formal_eligible = bool(metadata["formal_eligible"])
         result.state = metadata["state"]
+        self._append_manual_traceability(result, adjustments)
         return result
 
     def _write_outputs(self, result, run_dir: Path) -> None:
@@ -173,7 +262,7 @@ class ScheduleService:
         export_pdf(result, run_dir / "进度计划分析报告.pdf")
         (run_dir / "result.json").write_text(json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _payload(self, result, import_confirmed: bool = False) -> dict:
+    def _payload(self, result, import_confirmed: bool = False, adjustments: list[dict] | None = None) -> dict:
         payload = result.to_dict()
         confirmation_available = any(issue.code in {"AUTO_IMPORT_REVIEW", "AUTO_WBS_UNCONFIRMED"} for issue in result.issues)
         confirmable_codes = {"AUTO_IMPORT_REVIEW", "AUTO_WBS_UNCONFIRMED", "UNCONFIRMED_WBS", "UNCONFIRMED_RELATION"}
@@ -183,6 +272,7 @@ class ScheduleService:
             issue.blocking and (not confirmation_available or issue.code not in confirmable_codes)
             for issue in result.issues
         )
+        payload["manual_adjustments"] = adjustments or []
         payload["downloads"] = {
             "excel": f"/api/runs/{result.run_id}/files/excel",
             "pdf": f"/api/runs/{result.run_id}/files/pdf",
@@ -232,6 +322,82 @@ class ScheduleService:
             task.confirmed = True
         for relation in bundle.relations:
             relation.confirmed = True
+
+    @staticmethod
+    def _apply_manual_adjustments(bundle, adjustments: list[dict]) -> None:
+        if not adjustments:
+            return
+        from .models import ActualProgress, DelayCause, SourceRef
+
+        tasks = {task.wbs: task for task in bundle.tasks}
+        actuals = {actual.wbs: actual for actual in bundle.actuals}
+        for adjustment in adjustments:
+            task = tasks.get(adjustment["wbs"])
+            if not task:
+                continue
+            percent = float(adjustment["actual_percent"])
+            existing = actuals.get(task.wbs)
+            if percent >= 100:
+                task.status = "已完成"
+                actual_start = existing.actual_start if existing else bundle.project.data_date
+                actual_finish = bundle.project.data_date
+                remaining = 0
+            elif percent > 0:
+                task.status = "进行中"
+                actual_start = existing.actual_start if existing and existing.actual_start else bundle.project.data_date
+                actual_finish = None
+                remaining = int(adjustment["remaining_duration"])
+            else:
+                task.status = "未开始"
+                actual_start = None
+                actual_finish = None
+                remaining = int(adjustment["remaining_duration"])
+            actual = ActualProgress(
+                task.wbs,
+                task.quantity * percent / 100.0,
+                actual_start,
+                actual_finish,
+                remaining,
+                f"人工调整#{adjustment['id']}",
+                adjustment["actor"],
+            )
+            if existing:
+                bundle.actuals[bundle.actuals.index(existing)] = actual
+            else:
+                bundle.actuals.append(actual)
+            actuals[task.wbs] = actual
+            bundle.delay_causes.append(DelayCause(
+                task.wbs, adjustment["reason"], adjustment["note"], "人工判定", "待确认"
+            ))
+            cell = f"记录#{adjustment['id']}"
+            bundle.source_refs.extend([
+                SourceRef("人工调整", task.wbs, "实际完成工程量", "人工调整", cell, actual.actual_quantity),
+                SourceRef("人工调整", task.wbs, "剩余工期", "人工调整", cell, remaining),
+                SourceRef("人工调整", task.wbs, "偏差原因", "人工调整", cell, adjustment["reason"]),
+                SourceRef("人工调整", task.wbs, "干预措施", "人工调整", cell, adjustment["action_type"]),
+            ])
+
+    @staticmethod
+    def _append_manual_traceability(result, adjustments: list[dict]) -> None:
+        for adjustment in adjustments:
+            inputs = f"人工调整!记录#{adjustment['id']}"
+            for field, value in (
+                ("偏差原因", adjustment["reason"]),
+                ("干预措施", adjustment["action_type"]),
+                ("调整说明", adjustment["note"]),
+            ):
+                result.traceability.append({
+                    "output": "人工进度调整",
+                    "entity_id": adjustment["wbs"],
+                    "field": field,
+                    "value": value,
+                    "input_refs": inputs,
+                    "rule_version": result.rule_version,
+                    "rule": "计划工程师人工录入，重算滚动预测，不修改批准基线",
+                    "calculated_at": result.calculated_at,
+                    "input_hash": result.input_hash,
+                    "manual_override": "是",
+                })
 
     @staticmethod
     def _normalize_bundle(bundle) -> None:

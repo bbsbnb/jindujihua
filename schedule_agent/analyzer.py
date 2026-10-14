@@ -158,7 +158,7 @@ def _calculate_forecast(
             continue
         actual = actual_by_wbs.get(task.wbs)
         remaining_tasks.append(task)
-        if task.status == "进行中" and actual and actual.remaining_duration:
+        if task.status != "已完成" and actual and actual.remaining_duration is not None:
             remaining_durations[task.wbs] = actual.remaining_duration
         else:
             remaining_durations[task.wbs] = durations[task.wbs]
@@ -469,7 +469,7 @@ def build_traceability(bundle: InputBundle, schedule, forecast, scenarios, calcu
             "rule": rule,
             "calculated_at": calculated_at,
             "input_hash": bundle.input_hash,
-            "manual_override": "否",
+            "manual_override": "是" if "人工调整!" in inputs else "否",
         })
 
     for row in schedule:
@@ -478,8 +478,8 @@ def build_traceability(bundle: InputBundle, schedule, forecast, scenarios, calcu
         add("进度计划", row.wbs, "计划完成", row.early_finish, plan_inputs, "CPM前推")
         add("关键线路", row.wbs, "总时差", row.total_float, "计划开始/完成及逻辑网络", "CPM后推")
     for row in forecast:
-        actual_inputs = source_cells(row.wbs, [("实际进度", "实际完成工程量"), ("任务与工程量", "总工程量")])
-        forecast_inputs = source_cells(row.wbs, [("实际进度", "剩余工期"), ("实际进度", "实际开始日期"), ("外部约束", "最早可开始日期")])
+        actual_inputs = source_cells(row.wbs, [("人工调整", "实际完成工程量"), ("实际进度", "实际完成工程量"), ("任务与工程量", "总工程量")])
+        forecast_inputs = source_cells(row.wbs, [("人工调整", "剩余工期"), ("实际进度", "剩余工期"), ("实际进度", "实际开始日期"), ("外部约束", "最早可开始日期")])
         add("进度偏差", row.wbs, "实际完成率", row.actual_percent, actual_inputs, "实物工程量法")
         add("滚动预测", row.wbs, "预测完成", row.forecast_finish, forecast_inputs, "保留逻辑剩余网络前推")
     for row in scenarios:

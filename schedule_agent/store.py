@@ -53,6 +53,18 @@ class Store:
                     comment TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS manual_adjustments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    wbs TEXT NOT NULL,
+                    actual_percent REAL NOT NULL,
+                    remaining_duration INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             columns = {row["name"] for row in db.execute("PRAGMA table_info(runs)").fetchall()}
@@ -81,6 +93,51 @@ class Store:
                 "INSERT INTO audit_events(run_id, action, from_state, to_state, actor, comment, created_at) VALUES (?, '创建运行', NULL, '草案', ?, '', ?)",
                 (run_id, actor, now),
             )
+
+    def create_adjustment_run(self, source_run_id: str, run_id: str, version: int, input_path: Path, actor: str) -> dict:
+        source = self.get_run(source_run_id)
+        if not source:
+            raise ValueError("找不到原运行")
+        now = _now()
+        with self._connect() as db:
+            db.execute(
+                """INSERT INTO runs (
+                    run_id, project_id, version, state, formal_eligible, input_path,
+                    input_filename, input_hash, created_at, updated_at, actor, comment,
+                    import_confirmed, archived
+                ) VALUES (?, ?, ?, '草案', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)""",
+                (
+                    run_id, source["project_id"], version, source["formal_eligible"], str(input_path),
+                    source["input_filename"], source["input_hash"], now, now, actor,
+                    f"基于 {source_run_id} 创建人工调整版本", source["import_confirmed"],
+                ),
+            )
+            latest_adjustments = db.execute(
+                """SELECT adjustment.*
+                FROM manual_adjustments adjustment
+                JOIN (
+                    SELECT wbs, MAX(id) AS latest_id
+                    FROM manual_adjustments
+                    WHERE run_id = ?
+                    GROUP BY wbs
+                ) latest ON latest.latest_id = adjustment.id""",
+                (source_run_id,),
+            ).fetchall()
+            db.executemany(
+                """INSERT INTO manual_adjustments(
+                    run_id, wbs, actual_percent, remaining_duration, reason,
+                    action_type, note, actor, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [(
+                    run_id, row["wbs"], row["actual_percent"], row["remaining_duration"],
+                    row["reason"], row["action_type"], row["note"], row["actor"], now,
+                ) for row in latest_adjustments],
+            )
+            db.execute(
+                "INSERT INTO audit_events(run_id, action, from_state, to_state, actor, comment, created_at) VALUES (?, '创建调整版本', NULL, '草案', ?, ?, ?)",
+                (run_id, actor, f"基于已冻结版本 {source_run_id} 创建，不修改原批准基线", now),
+            )
+        return self.get_run(run_id)
 
     def list_runs(self) -> list[dict]:
         with self._connect() as db:
@@ -138,6 +195,54 @@ class Store:
                 [(row["run_id"], row["state"], actor, now) for row in rows],
             )
         return {"input_filename": run["input_filename"], "archived_runs": len(run_ids)}
+
+    def save_manual_adjustment(
+        self,
+        run_id: str,
+        wbs: str,
+        actual_percent: float,
+        remaining_duration: int,
+        reason: str,
+        action_type: str,
+        note: str,
+        actor: str,
+    ) -> None:
+        run = self.get_run(run_id)
+        if not run or run["archived"]:
+            raise ValueError("找不到该运行")
+        now = _now()
+        comment = (
+            f"{wbs}：实际完成率 {actual_percent:g}%，剩余工期 {remaining_duration} 个工作日；"
+            f"原因：{reason}；措施：{action_type}；说明：{note}"
+        )
+        with self._connect() as db:
+            db.execute(
+                """INSERT INTO manual_adjustments(
+                    run_id, wbs, actual_percent, remaining_duration, reason,
+                    action_type, note, actor, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, wbs, actual_percent, remaining_duration, reason, action_type, note, actor, now),
+            )
+            db.execute(
+                "INSERT INTO audit_events(run_id, action, from_state, to_state, actor, comment, created_at) VALUES (?, '人工调整进度', ?, ?, ?, ?, ?)",
+                (run_id, run["state"], run["state"], actor, comment, now),
+            )
+
+    def get_manual_adjustments(self, run_id: str) -> list[dict]:
+        with self._connect() as db:
+            rows = db.execute(
+                """SELECT adjustment.*
+                FROM manual_adjustments adjustment
+                JOIN (
+                    SELECT wbs, MAX(id) AS latest_id
+                    FROM manual_adjustments
+                    WHERE run_id = ?
+                    GROUP BY wbs
+                ) latest ON latest.latest_id = adjustment.id
+                ORDER BY adjustment.id""",
+                (run_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def transition(self, run_id: str, action: str, actor: str, comment: str) -> dict:
         run = self.get_run(run_id)

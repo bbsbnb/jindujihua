@@ -18,7 +18,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "ScheduleAgent/1.0"
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         try:
             if path == "/api/runs":
                 return self._json({"runs": SERVICE.store.list_runs()})
@@ -30,6 +31,15 @@ class Handler(BaseHTTPRequestHandler):
                 parts = path.strip("/").split("/")
                 run_id, kind = parts[2], parts[4]
                 return self._file(SERVICE.artifact_path(run_id, kind))
+            if path.startswith("/api/runs/") and path.endswith("/workbook-preview"):
+                from urllib.parse import parse_qs
+                run_id = path.strip("/").split("/")[2]
+                query = parse_qs(parsed.query)
+                return self._json(SERVICE.workbook_preview(
+                    run_id,
+                    query.get("kind", ["input"])[0],
+                    query.get("sheet", [""])[0],
+                ))
             if path.startswith("/api/runs/"):
                 run_id = path.strip("/").split("/")[2]
                 return self._json(SERVICE.get_result(run_id))
@@ -59,6 +69,19 @@ class Handler(BaseHTTPRequestHandler):
                 run_id = path.strip("/").split("/")[2]
                 body = self._json_body()
                 return self._json(SERVICE.archive_plan(run_id, body.get("actor", "计划工程师")))
+            if path.startswith("/api/runs/") and path.endswith("/adjust-progress"):
+                run_id = path.strip("/").split("/")[2]
+                body = self._json_body()
+                return self._json(SERVICE.adjust_progress(
+                    run_id,
+                    str(body.get("wbs", "")),
+                    float(body.get("actual_percent", -1)),
+                    int(body.get("remaining_duration", -1)),
+                    str(body.get("reason", "")),
+                    str(body.get("action_type", "")),
+                    str(body.get("note", "")),
+                    str(body.get("actor", "")),
+                ))
             if path.startswith("/api/runs/") and path.endswith("/chat"):
                 run_id = path.strip("/").split("/")[2]
                 body = self._json_body()

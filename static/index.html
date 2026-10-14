@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>市政道路工程进度计划 Agent</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/styles.css?v=20261014-5">
 </head>
 <body>
   <header class="topbar">
@@ -48,30 +48,32 @@
       </section>
 
       <section id="resultView" hidden>
-        <div class="project-header">
-          <div>
-            <div class="eyebrow" id="projectId"></div>
-            <h1 id="projectName"></h1>
-            <div class="project-meta" id="projectMeta"></div>
+        <div class="workspace-sticky-header">
+          <div class="project-header">
+            <div>
+              <div class="eyebrow" id="projectId"></div>
+              <h1 id="projectName"></h1>
+              <div class="project-meta" id="projectMeta"></div>
+            </div>
+            <div class="header-actions">
+              <span class="state-badge" id="stateBadge"></span>
+              <a class="icon-text-button" id="downloadExcel" title="下载 Excel 成果">↓ Excel</a>
+              <a class="icon-text-button" id="downloadPdf" title="下载 PDF 报告">↓ PDF</a>
+              <button class="button primary" id="workflowButton">提交复核</button>
+              <button class="button danger subtle" id="rejectButton" hidden>驳回</button>
+            </div>
           </div>
-          <div class="header-actions">
-            <span class="state-badge" id="stateBadge"></span>
-            <a class="icon-text-button" id="downloadExcel" title="下载 Excel 成果">↓ Excel</a>
-            <a class="icon-text-button" id="downloadPdf" title="下载 PDF 报告">↓ PDF</a>
-            <button class="button primary" id="workflowButton">提交复核</button>
-            <button class="button danger subtle" id="rejectButton" hidden>驳回</button>
-          </div>
+
+          <div class="alert-banner" id="eligibilityBanner"></div>
+
+          <nav class="tabs" aria-label="分析视图">
+            <button class="tab active" data-tab="overview">总览</button>
+            <button class="tab" data-tab="schedule">计划与横道图</button>
+            <button class="tab" data-tab="variance">进度偏差</button>
+            <button class="tab" data-tab="scenarios">纠偏情景</button>
+            <button class="tab" data-tab="issues">问题与追溯 <span id="issueCount"></span></button>
+          </nav>
         </div>
-
-        <div class="alert-banner" id="eligibilityBanner"></div>
-
-        <nav class="tabs" aria-label="分析视图">
-          <button class="tab active" data-tab="overview">总览</button>
-          <button class="tab" data-tab="schedule">计划与横道图</button>
-          <button class="tab" data-tab="variance">进度偏差</button>
-          <button class="tab" data-tab="scenarios">纠偏情景</button>
-          <button class="tab" data-tab="issues">问题与追溯 <span id="issueCount"></span></button>
-        </nav>
 
         <div id="tab-overview" class="tab-panel active">
           <div class="metric-grid" id="metricGrid"></div>
@@ -109,7 +111,7 @@
         <div id="tab-variance" class="tab-panel">
           <section class="data-section">
             <div class="section-heading"><div><h2>周度进度偏差</h2><p>默认同时对比当前批准基线与合同基线</p></div></div>
-            <div class="table-wrap"><table><thead><tr><th>WBS</th><th>状态</th><th>计划%</th><th>实际%</th><th>偏差</th><th>当前批准完成</th><th>合同基线完成</th><th>预测完成</th><th>对当前偏差</th><th>对合同偏差</th><th>剩余工期</th><th>当前关键</th><th>预警原因</th></tr></thead><tbody id="varianceBody"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>WBS</th><th>状态</th><th>计划%</th><th>实际%</th><th>偏差</th><th>当前批准完成</th><th>合同基线完成</th><th>预测完成</th><th>对当前偏差</th><th>对合同偏差</th><th>剩余工期</th><th>当前关键</th><th>预警原因</th><th>调整</th></tr></thead><tbody id="varianceBody"></tbody></table></div>
           </section>
         </div>
 
@@ -156,11 +158,11 @@
 
   <dialog id="workflowDialog">
     <form method="dialog" id="workflowForm">
-      <div class="dialog-heading"><h2 id="dialogTitle">提交复核</h2><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <div class="dialog-heading"><h2 id="dialogTitle">提交复核</h2><button class="icon-button" id="closeWorkflowDialog" type="button" aria-label="关闭">×</button></div>
       <label>操作人<input id="actorInput" required></label>
       <label>说明<textarea id="commentInput" rows="3" placeholder="可填写复核意见"></textarea></label>
       <label class="confirmation-check" id="importConfirmation" hidden><input type="checkbox" id="importConfirmationInput"><span>我已核对自动识别的字段映射、默认值、生成 WBS 和施工逻辑，并确认其可进入复核流程。</span></label>
-      <div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button primary" id="confirmWorkflow" value="default">确认</button></div>
+      <div class="dialog-actions"><button class="button secondary" id="cancelWorkflow" type="button">取消</button><button class="button primary" id="confirmWorkflow" type="submit">确认</button></div>
     </form>
   </dialog>
 
@@ -193,8 +195,36 @@
     </form>
   </dialog>
 
+  <dialog id="taskDialog" class="task-dialog">
+    <div class="dialog-heading"><h2 id="taskDialogTitle">节点详情</h2><button class="icon-button" id="closeTaskDialog" aria-label="关闭">×</button></div>
+    <div class="task-detail" id="taskDetail"></div>
+    <div class="dialog-actions"><button class="button secondary" id="taskViewSource">查看来源文件</button><button class="button primary" id="taskAdjust">人工干预</button></div>
+  </dialog>
+
+  <dialog id="adjustDialog" class="adjust-dialog">
+    <form method="dialog" id="adjustForm">
+      <div class="dialog-heading"><h2 id="adjustTitle">人工干预</h2><button class="icon-button" id="closeAdjustDialog" type="button" aria-label="关闭">×</button></div>
+      <div class="adjust-grid">
+        <label>实际完成率（%）<input id="adjustPercent" type="number" min="0" max="100" step="0.1" required></label>
+        <label>剩余工期（工作日）<input id="adjustRemaining" type="number" min="0" step="1" required></label>
+        <label>偏差原因<select id="adjustReason" required><option value="">请选择</option><option>资源不足</option><option>工作面受限</option><option>材料到货延误</option><option>外部审批延误</option><option>天气影响</option><option>施工组织调整</option><option>其他</option></select></label>
+        <label>干预措施<select id="adjustAction" required><option value="">请选择</option><option>增加资源</option><option>重配资源</option><option>调整任务顺序</option><option>合理搭接</option><option>延长作业时间</option><option>仅更新实际进度</option></select></label>
+      </div>
+      <label>调整说明<textarea id="adjustNote" rows="3" required placeholder="填写调整依据、执行条件和风险"></textarea></label>
+      <label>操作人<input id="adjustActor" required></label>
+      <div class="dialog-notice">保存后立即重算滚动预测；已复核或已批准计划会自动创建新的调整草案版本，原基线不被覆盖。</div>
+      <div class="dialog-actions"><button class="button secondary" id="cancelAdjust" type="button">取消</button><button class="button primary" type="submit">保存并重算</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="workbookDialog" class="workbook-dialog">
+    <div class="dialog-heading"><div><h2 id="workbookTitle">文件查看</h2><small id="workbookMeta"></small></div><button class="icon-button" id="closeWorkbookDialog" aria-label="关闭">×</button></div>
+    <div class="workbook-toolbar"><label>工作表<select id="workbookSheet"></select></label><a class="button secondary" id="downloadOriginal">下载文件</a></div>
+    <div class="workbook-preview" id="workbookPreview"></div>
+  </dialog>
+
   <div class="toast" id="toast" role="status"></div>
   <div class="loading" id="loading" hidden><span></span><p>正在计算计划并生成交付物...</p></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=20261014-8"></script>
 </body>
 </html>

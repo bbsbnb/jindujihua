@@ -1,4 +1,14 @@
-const state = { current: null, runs: [], workflowAction: null, deleteTarget: null };
+const state = {
+  current: null,
+  runs: [],
+  workflowAction: null,
+  deleteTarget: null,
+  selectedWbs: null,
+  selectedSourceReference: "",
+  workbookKind: "input",
+  workbookCell: "",
+  workbookSheet: ""
+};
 const $ = (id) => document.getElementById(id);
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 420;
@@ -19,6 +29,14 @@ function fmtDate(value) { return value ? String(value).slice(0, 10) : "-"; }
 function fmtDays(value) { return value === null || value === undefined ? "-" : `${value > 0 ? "+" : ""}${value} 天`; }
 function pill(text, tone = "neutral") { return `<span class="pill ${tone}">${esc(text)}</span>`; }
 function emptyRow(columns, message = "暂无数据") { return `<tr><td colspan="${columns}" style="text-align:center;color:#647781;padding:24px">${esc(message)}</td></tr>`; }
+function hasTask(wbs) { return state.current?.schedule?.some(row => row.wbs === wbs); }
+function nodeLink(wbs, label = wbs) {
+  return hasTask(wbs) ? `<button class="node-link" data-wbs="${esc(wbs)}">${esc(label)}</button>` : esc(label);
+}
+function sourceLink(reference, label = reference, force = false) {
+  if (!force && !sourceLocation(reference).cell) return esc(label);
+  return `<button class="source-link" data-source-ref="${esc(reference)}">${esc(label)}</button>`;
+}
 
 function showToast(message, error = false) {
   const toast = $("toast");
@@ -160,7 +178,7 @@ function render() {
   $("resultView").hidden = false;
   $("projectId").textContent = `${data.project.project_id} · V${data.version}`;
   $("projectName").textContent = data.project.project_name;
-  $("projectMeta").textContent = `数据日期 ${fmtDate(data.project.data_date)} · ${data.summary.import_mode || "标准模板"} · 规则 ${data.rule_version} · 输入 ${data.input_filename}`;
+  $("projectMeta").innerHTML = `数据日期 ${fmtDate(data.project.data_date)} · ${esc(data.summary.import_mode || "标准模板")} · 规则 ${esc(data.rule_version)} · 输入 ${sourceLink("", data.input_filename, true)}`;
   $("stateBadge").hidden = data.state === "草案";
   $("stateBadge").textContent = data.state === "草案" ? "" : data.state;
   $("stateBadge").className = `state-badge ${data.state === "已批准" ? "approved" : data.state === "已驳回" ? "rejected" : ""}`;
@@ -219,17 +237,17 @@ function renderMilestones(rows) {
 }
 
 function renderCriticalPath(path) {
-  $("criticalPath").innerHTML = path?.length ? path.map((item, index) => `${index ? '<span class="path-arrow">→</span>' : ""}<span class="path-node">${esc(item)}</span>`).join("") : `<span style="color:#647781;font-size:12px">未识别关键线路</span>`;
+  $("criticalPath").innerHTML = path?.length ? path.map((item, index) => `${index ? '<span class="path-arrow">→</span>' : ""}<span class="path-node">${nodeLink(item)}</span>`).join("") : `<span style="color:#647781;font-size:12px">未识别关键线路</span>`;
 }
 
 function renderAlerts(rows) {
   const alerts = rows.filter(row => row.alert);
   $("alertLabel").textContent = `${alerts.length} 项`;
-  $("alertBody").innerHTML = alerts.map(row => `<tr class="row-alert"><td>${esc(row.wbs)}</td><td>${esc(row.status)}</td><td>${row.planned_percent.toFixed(1)}</td><td>${row.actual_percent.toFixed(1)}</td><td>${row.variance_pp > 0 ? "+" : ""}${row.variance_pp.toFixed(1)}pp</td><td>${fmtDate(row.forecast_finish)}</td><td>${fmtDays(row.finish_variance_days)}</td><td>${esc(row.alert_reason)}</td></tr>`).join("") || emptyRow(8, "当前没有达到阈值的重点预警");
+  $("alertBody").innerHTML = alerts.map(row => `<tr class="row-alert"><td>${nodeLink(row.wbs)}</td><td>${esc(row.status)}</td><td>${row.planned_percent.toFixed(1)}</td><td>${row.actual_percent.toFixed(1)}</td><td>${row.variance_pp > 0 ? "+" : ""}${row.variance_pp.toFixed(1)}pp</td><td>${fmtDate(row.forecast_finish)}</td><td>${fmtDays(row.finish_variance_days)}</td><td>${esc(row.alert_reason)}</td></tr>`).join("") || emptyRow(8, "当前没有达到阈值的重点预警");
 }
 
 function renderSchedule(rows) {
-  $("scheduleBody").innerHTML = rows.map(row => `<tr><td>${esc(row.wbs)}</td><td>${esc(row.name)}</td><td>${row.duration}</td><td>${fmtDate(row.early_start)}</td><td>${fmtDate(row.early_finish)}</td><td>${fmtDate(row.late_start)}</td><td>${fmtDate(row.late_finish)}</td><td>${row.total_float}</td><td>${row.free_float}</td><td>${pill(row.critical ? "是" : "否", row.critical ? "bad" : "neutral")}</td></tr>`).join("") || emptyRow(10);
+  $("scheduleBody").innerHTML = rows.map(row => `<tr><td>${nodeLink(row.wbs)}</td><td>${esc(row.name)}</td><td>${row.duration}</td><td>${fmtDate(row.early_start)}</td><td>${fmtDate(row.early_finish)}</td><td>${fmtDate(row.late_start)}</td><td>${fmtDate(row.late_finish)}</td><td>${row.total_float}</td><td>${row.free_float}</td><td>${pill(row.critical ? "是" : "否", row.critical ? "bad" : "neutral")}</td></tr>`).join("") || emptyRow(10);
 }
 
 function renderGantt(rows) {
@@ -243,7 +261,7 @@ function renderGantt(rows) {
   const body = rows.map(row => {
     const left = Math.max(0, (new Date(row.early_start) - start) / 86400000 / span * 100);
     const width = Math.max(1, ((new Date(row.early_finish) - new Date(row.early_start)) / 86400000 + 1) / span * 100);
-    return `<div class="gantt-row"><div class="gantt-name" title="${esc(row.name)}">${esc(row.wbs)} ${esc(row.name)}</div><div class="gantt-track"><span class="gantt-bar ${row.critical ? "key" : ""}" style="left:${left}%;width:${width}%" title="${fmtDate(row.early_start)} 至 ${fmtDate(row.early_finish)}"></span></div></div>`;
+    return `<div class="gantt-row"><div class="gantt-name" title="${esc(row.name)}">${nodeLink(row.wbs)} ${esc(row.name)}</div><div class="gantt-track"><button class="gantt-bar ${row.critical ? "key" : ""}" data-wbs="${esc(row.wbs)}" style="left:${left}%;width:${width}%" title="${fmtDate(row.early_start)} 至 ${fmtDate(row.early_finish)}，点击查看节点"></button></div></div>`;
   }).join("");
   $("gantt").innerHTML = scale + body;
 }
@@ -253,15 +271,15 @@ function renderConflicts(rows) {
 }
 
 function renderVariance(rows) {
-  $("varianceBody").innerHTML = rows.map(row => `<tr class="${row.alert ? "row-alert" : ""}"><td>${esc(row.wbs)}</td><td>${esc(row.status)}</td><td>${row.planned_percent.toFixed(1)}</td><td>${row.actual_percent.toFixed(1)}</td><td>${row.variance_pp > 0 ? "+" : ""}${row.variance_pp.toFixed(1)}pp</td><td>${fmtDate(row.baseline_finish)}</td><td>${fmtDate(row.contract_baseline_finish)}</td><td>${fmtDate(row.forecast_finish)}</td><td>${fmtDays(row.finish_variance_days)}</td><td>${fmtDays(row.contract_variance_days)}</td><td>${row.remaining_duration}</td><td>${pill(row.current_critical ? "是" : "否", row.current_critical ? "bad" : "neutral")}</td><td>${esc(row.alert_reason || "-")}</td></tr>`).join("") || emptyRow(13);
+  $("varianceBody").innerHTML = rows.map(row => `<tr class="${row.alert ? "row-alert" : ""}"><td>${nodeLink(row.wbs)}</td><td>${esc(row.status)}</td><td>${row.planned_percent.toFixed(1)}</td><td>${row.actual_percent.toFixed(1)}</td><td>${row.variance_pp > 0 ? "+" : ""}${row.variance_pp.toFixed(1)}pp</td><td>${fmtDate(row.baseline_finish)}</td><td>${fmtDate(row.contract_baseline_finish)}</td><td>${fmtDate(row.forecast_finish)}</td><td>${fmtDays(row.finish_variance_days)}</td><td>${fmtDays(row.contract_variance_days)}</td><td>${row.remaining_duration}</td><td>${pill(row.current_critical ? "是" : "否", row.current_critical ? "bad" : "neutral")}</td><td>${esc(row.alert_reason || "-")}</td><td><button class="row-action" data-adjust-wbs="${esc(row.wbs)}" title="人工干预 ${esc(row.wbs)}" aria-label="人工干预 ${esc(row.wbs)}">✎</button></td></tr>`).join("") || emptyRow(14);
 }
 
 function renderScenarios(rows) {
-  $("scenarioList").innerHTML = rows.map(row => `<article class="scenario ${row.quantified ? "" : "unquantified"}"><div class="scenario-title"><h3>${esc(row.scenario_id)} · ${esc(row.action_type)} · ${esc(row.task_wbs)} ${esc(row.task_name)}</h3>${pill(row.quantified ? "已量化" : "待补参数", row.quantified ? "ok" : "warn")}</div><div class="scenario-grid"><div><span>调整前 / 后工期</span><strong>${row.before_duration} / ${row.after_duration ?? "-"} 工作日</strong></div><div><span>资源增量</span><strong>${row.resource_delta ?? "-"}</strong></div><div><span>预计追回</span><strong>${row.recovered_days === null ? "-" : row.recovered_days + " 工作日"}</strong></div><div><span>审批要求</span><strong>${esc(row.approval)}</strong></div></div><p class="scenario-notes">${esc(row.milestone_impact)}；${esc(row.resource_conflict)}；${esc(row.risk)}</p></article>`).join("") || `<div class="critical-path"><span style="color:#647781;font-size:12px">当前没有达到组合预警阈值的关键任务，无需生成纠偏情景。</span></div>`;
+  $("scenarioList").innerHTML = rows.map(row => `<article class="scenario ${row.quantified ? "" : "unquantified"}"><div class="scenario-title"><h3>${esc(row.scenario_id)} · ${esc(row.action_type)} · ${nodeLink(row.task_wbs)} ${esc(row.task_name)}</h3><div>${pill(row.quantified ? "已量化" : "待补参数", row.quantified ? "ok" : "warn")} <button class="button secondary compact" data-adjust-wbs="${esc(row.task_wbs)}" data-adjust-action="${esc(row.action_type)}">人工干预</button></div></div><div class="scenario-grid"><div><span>调整前 / 后工期</span><strong>${row.before_duration} / ${row.after_duration ?? "-"} 工作日</strong></div><div><span>资源增量</span><strong>${row.resource_delta ?? "-"}</strong></div><div><span>预计追回</span><strong>${row.recovered_days === null ? "-" : row.recovered_days + " 工作日"}</strong></div><div><span>审批要求</span><strong>${esc(row.approval)}</strong></div></div><p class="scenario-notes">${esc(row.milestone_impact)}；${esc(row.resource_conflict)}；${esc(row.risk)}</p></article>`).join("") || `<div class="critical-path"><span style="color:#647781;font-size:12px">当前没有达到组合预警阈值的关键任务，无需生成纠偏情景。</span></div>`;
 }
 
 function renderIssues(rows) {
-  $("issueBody").innerHTML = rows.map(row => `<tr class="${row.blocking ? "row-alert" : ""}"><td>${pill(row.severity, row.severity === "错误" ? "bad" : "warn")}</td><td>${esc(row.code)}</td><td>${esc(row.entity_id || "-")}</td><td>${esc(row.field_name || "-")}</td><td>${esc(row.message)}</td><td>${row.blocking ? pill("是", "bad") : pill("否")}</td></tr>`).join("") || emptyRow(6, "未发现数据质量问题");
+  $("issueBody").innerHTML = rows.map(row => `<tr class="${row.blocking ? "row-alert" : ""}"><td>${pill(row.severity, row.severity === "错误" ? "bad" : "warn")}</td><td>${esc(row.code)}</td><td>${nodeLink(row.entity_id, row.entity_id || "-")}</td><td>${esc(row.field_name || "-")}</td><td>${esc(row.message)}</td><td>${row.blocking ? pill("是", "bad") : pill("否")}</td></tr>`).join("") || emptyRow(6, "未发现数据质量问题");
 }
 
 function renderAudit(rows) {
@@ -270,7 +288,127 @@ function renderAudit(rows) {
 
 function renderTrace(rows) {
   $("traceCount").textContent = `${rows.length} 条`;
-  $("traceBody").innerHTML = rows.slice(0, 250).map(row => `<tr><td>${esc(row.output)}</td><td>${esc(row.entity_id)}</td><td>${esc(row.field)}</td><td>${esc(row.value)}</td><td>${esc(row.input_refs)}</td><td>${esc(row.rule)}</td><td>${esc(row.rule_version)}</td></tr>`).join("") || emptyRow(7);
+  $("traceBody").innerHTML = rows.slice(0, 250).map(row => `<tr><td>${esc(row.output)}</td><td>${nodeLink(row.entity_id)}</td><td>${esc(row.field)}</td><td>${esc(row.value)}</td><td>${sourceLink(row.input_refs)}</td><td>${esc(row.rule)}</td><td>${esc(row.rule_version)}</td></tr>`).join("") || emptyRow(7);
+}
+
+function taskData(wbs) {
+  if (!state.current) return null;
+  const schedule = state.current.schedule.find(row => row.wbs === wbs);
+  if (!schedule) return null;
+  return {
+    schedule,
+    forecast: state.current.forecast.find(row => row.wbs === wbs) || {},
+    adjustment: state.current.manual_adjustments?.find(row => row.wbs === wbs) || null,
+    source: state.current.traceability.find(row => row.entity_id === wbs && /!\$?[A-Z]+\$?\d+/.test(row.input_refs || ""))?.input_refs || ""
+  };
+}
+
+function detailItem(label, value) {
+  return `<div><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+}
+
+function openTask(wbs) {
+  const task = taskData(wbs);
+  if (!task) return showToast("未找到该任务节点", true);
+  const { schedule, forecast, adjustment } = task;
+  state.selectedWbs = wbs;
+  state.selectedSourceReference = task.source;
+  $("taskDialogTitle").textContent = `${wbs} ${schedule.name}`;
+  $("taskDetail").innerHTML = [
+    detailItem("区段 / 工作面", `${schedule.section || "-"} / ${schedule.workfront || "-"}`),
+    detailItem("基线工期", `${schedule.duration} 工作日`),
+    detailItem("计划日期", `${fmtDate(schedule.early_start)} 至 ${fmtDate(schedule.early_finish)}`),
+    detailItem("任务状态", forecast.status || "-"),
+    detailItem("计划 / 实际完成率", `${forecast.planned_percent?.toFixed(1) ?? "-"}% / ${forecast.actual_percent?.toFixed(1) ?? "-"}%`),
+    detailItem("滚动预测完成", fmtDate(forecast.forecast_finish)),
+    detailItem("剩余工期", forecast.remaining_duration === undefined ? "-" : `${forecast.remaining_duration} 工作日`),
+    detailItem("当前关键", forecast.current_critical ? "是" : "否"),
+    detailItem("最近人工干预", adjustment ? `${adjustment.action_type} · ${adjustment.actor}` : "无")
+  ].join("");
+  $("taskViewSource").disabled = !task.source;
+  $("taskDialog").showModal();
+}
+
+function openAdjust(wbs, actionType = "") {
+  const task = taskData(wbs);
+  if (!task) return showToast("未找到需要调整的任务", true);
+  const { schedule, forecast, adjustment } = task;
+  state.selectedWbs = wbs;
+  $("adjustTitle").textContent = `人工干预 · ${wbs} ${schedule.name}`;
+  $("adjustPercent").value = adjustment?.actual_percent ?? forecast.actual_percent ?? 0;
+  $("adjustRemaining").value = adjustment?.remaining_duration ?? forecast.remaining_duration ?? 0;
+  $("adjustReason").value = adjustment?.reason || "";
+  $("adjustAction").value = adjustment?.action_type || actionType || "";
+  $("adjustNote").value = adjustment?.note || "";
+  $("adjustActor").value = adjustment?.actor || state.current.project.preparer || "计划工程师";
+  $("adjustDialog").showModal();
+}
+
+async function submitAdjustment(event) {
+  event.preventDefault();
+  const body = {
+    wbs: state.selectedWbs,
+    actual_percent: Number($("adjustPercent").value),
+    remaining_duration: Number($("adjustRemaining").value),
+    reason: $("adjustReason").value,
+    action_type: $("adjustAction").value,
+    note: $("adjustNote").value.trim(),
+    actor: $("adjustActor").value.trim()
+  };
+  if (!body.reason || !body.action_type || !body.note || !body.actor) return showToast("请完整填写偏差原因、措施、说明和操作人", true);
+  $("adjustDialog").close();
+  setLoading(true);
+  try {
+    const originalRun = state.current.run_id;
+    state.current = await api(`/api/runs/${originalRun}/adjust-progress`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    await loadRuns();
+    render();
+    const created = originalRun !== state.current.run_id;
+    showToast(created ? "已创建调整版本并重算预测，原基线保持不变" : "人工调整已记录，滚动预测已重算");
+  } catch (error) { showToast(error.message, true); }
+  finally { setLoading(false); }
+}
+
+function sourceLocation(reference) {
+  const match = String(reference || "").match(/(?:^|[；;])\s*'?([^'!；;]+)'?!\$?([A-Z]{1,3})\$?(\d+)/i);
+  return match ? { sheet: match[1].trim(), cell: `${match[2].toUpperCase()}${match[3]}` } : { sheet: "", cell: "" };
+}
+
+function openSourceReference(reference) {
+  const location = sourceLocation(reference);
+  openWorkbook("input", location.sheet, location.cell);
+}
+
+async function openWorkbook(kind = "input", sheet = "", cell = "") {
+  if (!state.current) return;
+  setLoading(true);
+  try {
+    const query = new URLSearchParams({ kind });
+    if (sheet) query.set("sheet", sheet);
+    const data = await api(`/api/runs/${state.current.run_id}/workbook-preview?${query}`);
+    state.workbookKind = kind;
+    state.workbookSheet = data.sheet;
+    state.workbookCell = cell;
+    $("workbookTitle").textContent = data.filename;
+    $("workbookMeta").textContent = `${data.sheet} · 最多预览 200 行 × 40 列${data.truncated ? " · 内容已截断" : ""}`;
+    $("workbookSheet").innerHTML = data.sheets.map(name => `<option value="${esc(name)}" ${name === data.sheet ? "selected" : ""}>${esc(name)}</option>`).join("");
+    $("downloadOriginal").href = state.current.downloads[kind];
+    $("downloadOriginal").textContent = "下载文件";
+    const columns = data.rows[0]?.map(item => item.cell.replace(/\d+$/, "")) || [];
+    const head = `<thead><tr><th></th>${columns.map(name => `<th>${esc(name)}</th>`).join("")}</tr></thead>`;
+    const body = data.rows.map((row, index) => {
+      const rowNumber = row[0]?.cell.match(/\d+$/)?.[0] || index + 1;
+      return `<tr><th class="row-number">${rowNumber}</th>${row.map(item => `<td data-cell="${esc(item.cell)}" class="${item.cell.toUpperCase() === cell.toUpperCase() ? "highlight-cell" : ""}">${esc(item.value)}</td>`).join("")}</tr>`;
+    }).join("");
+    $("workbookPreview").innerHTML = `<table>${head}<tbody>${body}</tbody></table>`;
+    if (!$("workbookDialog").open) $("workbookDialog").showModal();
+    requestAnimationFrame(() => $("workbookPreview").querySelector(".highlight-cell")?.scrollIntoView({block: "center", inline: "center"}));
+  } catch (error) { showToast(error.message, true); }
+  finally { setLoading(false); }
 }
 
 function openWorkflow(action) {
@@ -354,11 +492,41 @@ $("refreshRuns").addEventListener("click", loadRuns);
 $("workflowButton").addEventListener("click", event => openWorkflow(event.currentTarget.dataset.action));
 $("rejectButton").addEventListener("click", () => openWorkflow("reject"));
 $("workflowForm").addEventListener("submit", submitWorkflow);
+$("closeWorkflowDialog").addEventListener("click", () => $("workflowDialog").close());
+$("cancelWorkflow").addEventListener("click", () => $("workflowDialog").close());
 $("deletePlanForm").addEventListener("submit", deletePlan);
+$("adjustForm").addEventListener("submit", submitAdjustment);
+$("closeTaskDialog").addEventListener("click", () => $("taskDialog").close());
+$("closeAdjustDialog").addEventListener("click", () => $("adjustDialog").close());
+$("cancelAdjust").addEventListener("click", () => $("adjustDialog").close());
+$("closeWorkbookDialog").addEventListener("click", () => $("workbookDialog").close());
+$("taskAdjust").addEventListener("click", () => {
+  $("taskDialog").close();
+  openAdjust(state.selectedWbs);
+});
+$("taskViewSource").addEventListener("click", () => {
+  $("taskDialog").close();
+  openSourceReference(state.selectedSourceReference);
+});
+$("workbookSheet").addEventListener("change", event => openWorkbook(state.workbookKind, event.target.value, ""));
 $("chatForm").addEventListener("submit", sendChat);
 $("clearChat").addEventListener("click", () => $("chatMessages").innerHTML = `<div class="message agent">对话已清空。你可以继续查询当前运行结果。</div>`);
 $("assistantToggle").addEventListener("click", () => setAssistantOpen(true));
 $("closeAssistant").addEventListener("click", () => setAssistantOpen(false));
+document.addEventListener("click", event => {
+  const adjust = event.target.closest("[data-adjust-wbs]");
+  if (adjust) {
+    openAdjust(adjust.dataset.adjustWbs, adjust.dataset.adjustAction || "");
+    return;
+  }
+  const node = event.target.closest("[data-wbs]");
+  if (node) {
+    openTask(node.dataset.wbs);
+    return;
+  }
+  const source = event.target.closest("[data-source-ref]");
+  if (source) openSourceReference(source.dataset.sourceRef);
+});
 document.addEventListener("keydown", event => {
   if (event.key === "Escape" && $("assistantPanel").classList.contains("open")) setAssistantOpen(false);
 });
