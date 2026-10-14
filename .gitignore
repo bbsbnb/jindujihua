@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+data/
+generated/
+work/
+.playwright-cli/
+
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log

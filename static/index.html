@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>市政道路工程进度计划 Agent</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">进</span>
+      <div><strong>工程进度计划 Agent</strong><small>市政道路综合工程</small></div>
+    </div>
+    <div class="top-actions">
+      <a class="button secondary" href="/api/template" download>↓ 标准模板</a>
+      <a class="button secondary" href="/api/sample-file" download>↓ 示例文件</a>
+      <button class="button primary" id="uploadButton">↑ 导入并分析</button>
+      <input type="file" id="fileInput" accept=".xlsx" hidden>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-heading">
+        <div>
+          <span>进度计划</span>
+          <small id="runCount">0 份计划</small>
+        </div>
+        <button class="icon-button" id="refreshRuns" title="刷新运行列表" aria-label="刷新运行列表">↻</button>
+      </div>
+      <button class="new-project-button" id="newProjectButton"><span>＋</span> 新建项目</button>
+      <div id="runList" class="run-list"></div>
+      <div class="sidebar-footer">
+        <span class="status-dot"></span>
+        <span>本地服务已连接</span>
+      </div>
+    </aside>
+    <div class="sidebar-resizer" id="sidebarResizer" role="separator" aria-label="调整导航栏宽度" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="420" tabindex="0"></div>
+
+    <main class="workspace">
+      <section id="emptyState" class="empty-state">
+        <div class="empty-icon">▦</div>
+        <h1>开始一次进度分析</h1>
+        <p>导入标准模板或已有进度表，系统会自动识别并生成分析结果。</p>
+        <button class="button primary" id="emptyUpload">↑ 选择 Excel</button>
+      </section>
+
+      <section id="resultView" hidden>
+        <div class="project-header">
+          <div>
+            <div class="eyebrow" id="projectId"></div>
+            <h1 id="projectName"></h1>
+            <div class="project-meta" id="projectMeta"></div>
+          </div>
+          <div class="header-actions">
+            <span class="state-badge" id="stateBadge"></span>
+            <a class="icon-text-button" id="downloadExcel" title="下载 Excel 成果">↓ Excel</a>
+            <a class="icon-text-button" id="downloadPdf" title="下载 PDF 报告">↓ PDF</a>
+            <button class="button primary" id="workflowButton">提交复核</button>
+            <button class="button danger subtle" id="rejectButton" hidden>驳回</button>
+          </div>
+        </div>
+
+        <div class="alert-banner" id="eligibilityBanner"></div>
+
+        <nav class="tabs" aria-label="分析视图">
+          <button class="tab active" data-tab="overview">总览</button>
+          <button class="tab" data-tab="schedule">计划与横道图</button>
+          <button class="tab" data-tab="variance">进度偏差</button>
+          <button class="tab" data-tab="scenarios">纠偏情景</button>
+          <button class="tab" data-tab="issues">问题与追溯 <span id="issueCount"></span></button>
+        </nav>
+
+        <div id="tab-overview" class="tab-panel active">
+          <div class="metric-grid" id="metricGrid"></div>
+          <div class="overview-grid">
+            <section class="data-section">
+              <div class="section-heading"><div><h2>关键里程碑</h2><p>合同、当前批准与滚动预测对比</p></div></div>
+              <div class="table-wrap"><table><thead><tr><th>里程碑</th><th>合同日期</th><th>当前批准</th><th>预测日期</th><th>偏差</th><th>状态</th></tr></thead><tbody id="milestoneBody"></tbody></table></div>
+            </section>
+            <section class="data-section">
+              <div class="section-heading"><div><h2>关键线路</h2><p>按基线 CPM 总时差识别</p></div></div>
+              <div class="critical-path" id="criticalPath"></div>
+            </section>
+          </div>
+          <section class="data-section">
+            <div class="section-heading"><div><h2>重点预警</h2><p>关键任务异常、完成率落后或日期偏差达到阈值</p></div><span class="count-label" id="alertLabel"></span></div>
+            <div class="table-wrap"><table><thead><tr><th>WBS</th><th>状态</th><th>计划%</th><th>实际%</th><th>偏差</th><th>预测完成</th><th>日期偏差</th><th>原因</th></tr></thead><tbody id="alertBody"></tbody></table></div>
+          </section>
+        </div>
+
+        <div id="tab-schedule" class="tab-panel">
+          <section class="data-section gantt-section">
+            <div class="section-heading"><div><h2>计划横道图</h2><p>红色为关键任务，青色为非关键任务</p></div><div class="legend"><span><i class="key"></i>关键</span><span><i></i>非关键</span></div></div>
+            <div class="gantt" id="gantt"></div>
+          </section>
+          <section class="data-section">
+            <div class="section-heading"><div><h2>进度计划表</h2><p>最早/最迟日期与时差</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>WBS</th><th>任务</th><th>工期</th><th>最早开始</th><th>最早完成</th><th>最迟开始</th><th>最迟完成</th><th>总时差</th><th>自由时差</th><th>关键</th></tr></thead><tbody id="scheduleBody"></tbody></table></div>
+          </section>
+          <section class="data-section">
+            <div class="section-heading"><div><h2>资源与工作面冲突</h2><p>只报告冲突，不自动移动任务</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>类型</th><th>资源/工作面</th><th>日期</th><th>需求</th><th>能力</th><th>任务</th><th>说明</th></tr></thead><tbody id="conflictBody"></tbody></table></div>
+          </section>
+        </div>
+
+        <div id="tab-variance" class="tab-panel">
+          <section class="data-section">
+            <div class="section-heading"><div><h2>周度进度偏差</h2><p>默认同时对比当前批准基线与合同基线</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>WBS</th><th>状态</th><th>计划%</th><th>实际%</th><th>偏差</th><th>当前批准完成</th><th>合同基线完成</th><th>预测完成</th><th>对当前偏差</th><th>对合同偏差</th><th>剩余工期</th><th>当前关键</th><th>预警原因</th></tr></thead><tbody id="varianceBody"></tbody></table></div>
+          </section>
+        </div>
+
+        <div id="tab-scenarios" class="tab-panel">
+          <section class="data-section">
+            <div class="section-heading"><div><h2>纠偏候选情景</h2><p>情景不会自动写回基线，批准后需建立新版本</p></div></div>
+            <div id="scenarioList" class="scenario-list"></div>
+          </section>
+        </div>
+
+        <div id="tab-issues" class="tab-panel">
+          <section class="data-section">
+            <div class="section-heading"><div><h2>问题清单</h2><p>阻断项处理完成前不能进入复核和批准</p></div></div>
+            <div class="table-wrap"><table><thead><tr><th>级别</th><th>编码</th><th>对象</th><th>字段</th><th>说明</th><th>阻断</th></tr></thead><tbody id="issueBody"></tbody></table></div>
+          </section>
+          <section class="data-section">
+            <div class="section-heading"><div><h2>审批与审计记录</h2><p>状态变化、操作人和原因完整留痕</p></div></div>
+            <div class="audit-list" id="auditList"></div>
+          </section>
+          <section class="data-section">
+            <div class="section-heading"><div><h2>字段级追溯</h2><p>结果、输入引用、规则版本和计算时间</p></div><span class="count-label" id="traceCount"></span></div>
+            <div class="table-wrap"><table><thead><tr><th>交付物</th><th>对象</th><th>字段</th><th>结果值</th><th>输入引用</th><th>处理规则</th><th>规则版本</th></tr></thead><tbody id="traceBody"></tbody></table></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <aside class="assistant-panel" id="assistantPanel" aria-hidden="true">
+      <div class="assistant-heading">
+        <div><strong>进度助手</strong><small>基于当前运行结果</small></div>
+        <div class="assistant-actions">
+          <button class="text-button" id="clearChat" title="清空对话">清空</button>
+          <button class="icon-button" id="closeAssistant" title="关闭进度助手" aria-label="关闭进度助手">×</button>
+        </div>
+      </div>
+      <div class="chat-messages" id="chatMessages"><div class="message agent">载入一次运行后，可以查询关键线路、延期风险、纠偏建议和阻断问题。</div></div>
+      <form class="chat-input" id="chatForm"><input id="chatText" placeholder="询问当前计划..." autocomplete="off"><button title="发送" aria-label="发送">↑</button></form>
+    </aside>
+    <button class="assistant-toggle" id="assistantToggle" aria-controls="assistantPanel" aria-expanded="false">
+      <span class="assistant-toggle-icon">问</span>
+      <span>进度助手</span>
+    </button>
+  </div>
+
+  <dialog id="workflowDialog">
+    <form method="dialog" id="workflowForm">
+      <div class="dialog-heading"><h2 id="dialogTitle">提交复核</h2><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <label>操作人<input id="actorInput" required></label>
+      <label>说明<textarea id="commentInput" rows="3" placeholder="可填写复核意见"></textarea></label>
+      <label class="confirmation-check" id="importConfirmation" hidden><input type="checkbox" id="importConfirmationInput"><span>我已核对自动识别的字段映射、默认值、生成 WBS 和施工逻辑，并确认其可进入复核流程。</span></label>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button primary" id="confirmWorkflow" value="default">确认</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="newProjectDialog" class="new-project-dialog">
+    <form method="dialog">
+      <div class="dialog-heading"><h2>新建项目</h2><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <div class="new-project-options">
+        <button class="project-option" id="newProjectUpload" type="button">
+          <span class="project-option-icon">↑</span>
+          <span><strong>上传进度计划表</strong><small>Excel .xlsx</small></span>
+        </button>
+        <a class="project-option" href="/api/template" download>
+          <span class="project-option-icon">↓</span>
+          <span><strong>下载标准模板</strong><small>创建后填写并导入</small></span>
+        </a>
+      </div>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="deletePlanDialog" class="delete-plan-dialog">
+    <form method="dialog" id="deletePlanForm">
+      <div class="dialog-heading"><h2>删除进度计划</h2><button class="icon-button" value="cancel" aria-label="关闭">×</button></div>
+      <div class="delete-plan-message">
+        <p>确认从导航中删除以下进度计划？</p>
+        <strong id="deletePlanName"></strong>
+        <small>该计划的全部历史版本将从导航移除，原始文件、交付物和审计记录仍会保留。</small>
+      </div>
+      <div class="dialog-actions"><button class="button secondary" value="cancel">取消</button><button class="button danger" id="confirmDeletePlan" value="default">确认删除</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+  <div class="loading" id="loading" hidden><span></span><p>正在计算计划并生成交付物...</p></div>
+  <script src="/app.js"></script>
+</body>
+</html>
